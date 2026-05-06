@@ -2,8 +2,13 @@ use anyhow::{anyhow, Result};
 use crossterm::terminal;
 use streamdown_ansi::utils::visible_length;
 use streamdown_config::{ComputedStyle, Config as StreamdownConfig};
-use streamdown_parser::{ParseEvent, Parser as StreamdownParser};
-use streamdown_render::{RenderFeatures, RenderStyle, Renderer as StreamdownRenderer};
+use streamdown_parser::{
+    InlineElement, InlineParser, ListBullet, ParseEvent, Parser as StreamdownParser,
+};
+use streamdown_render::{
+    fg_color, render_heading, text_wrap, RenderFeatures, RenderStyle,
+    Renderer as StreamdownRenderer, BULLETS,
+};
 use streamdown_syntax::Highlighter;
 
 pub struct MarkdownRender {
@@ -48,7 +53,7 @@ impl MarkdownRender {
             ..Default::default()
         };
         let computed_style = streamdown.computed_style();
-        let style = RenderStyle::from_computed(&computed_style);
+        let style = render_style_from_computed(&computed_style);
 
         let mut parser = StreamdownParser::new();
         parser.set_code_spaces(streamdown.features.code_spaces);
@@ -85,15 +90,9 @@ impl MarkdownRender {
             return self.render_code_line(line);
         }
 
-        let mut parser = StreamdownParser::new();
-        let mut output = Vec::new();
-        {
-            let mut renderer = self.renderer(&mut output);
-            let _ = renderer.render(&parser.parse_line(line));
-        }
-        String::from_utf8_lossy(&output)
-            .trim_end_matches(['\r', '\n'])
-            .to_string()
+        let mut parser = StreamdownParser::with_state(self.parser.state().clone());
+        let events = parser.parse_line(line);
+        self.preview_events(events)
     }
 
     fn render_text(&mut self, text: &str, finalize: bool) -> String {
@@ -131,6 +130,13 @@ impl MarkdownRender {
                     standard_events.clear();
                     self.code_language = None;
                 }
+                event @ ParseEvent::Heading { .. } | event @ ParseEvent::ListItem { .. } => {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    let line = self.render_custom_block(&event);
+                    output.extend_from_slice(line.as_bytes());
+                    output.push(b'\n');
+                }
                 event => standard_events.push(event),
             }
         }
@@ -148,6 +154,120 @@ impl MarkdownRender {
         }
         let mut renderer = self.renderer(output);
         let _ = renderer.render(events);
+    }
+
+    fn preview_events(&self, events: Vec<ParseEvent>) -> String {
+        let mut output = Vec::new();
+        let mut standard_events = Vec::new();
+        for event in events {
+            match event {
+                ParseEvent::CodeBlockStart { language, .. } => {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    self.render_code_label(&mut output, language.as_deref());
+                }
+                ParseEvent::CodeBlockLine(line) => {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    let line =
+                        self.render_code_line_with_language(&line, self.code_language.as_deref());
+                    output.extend_from_slice(line.as_bytes());
+                    output.push(b'\n');
+                }
+                ParseEvent::CodeBlockEnd => {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                }
+                event @ ParseEvent::Heading { .. } | event @ ParseEvent::ListItem { .. } => {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    let line = self.render_custom_block(&event);
+                    output.extend_from_slice(line.as_bytes());
+                    output.push(b'\n');
+                }
+                event => standard_events.push(event),
+            }
+        }
+        self.render_standard_events(&mut output, &standard_events);
+        String::from_utf8_lossy(&output)
+            .trim_end_matches(['\r', '\n'])
+            .to_string()
+    }
+
+    fn render_custom_block(&self, event: &ParseEvent) -> String {
+        match event {
+            ParseEvent::Heading { level, content } => {
+                render_heading(*level, content, self.width, "", &self.style).join("\n")
+            }
+            ParseEvent::ListItem {
+                indent,
+                bullet,
+                content,
+            } => self.render_list_item(*indent, bullet, content),
+            _ => String::new(),
+        }
+    }
+
+    fn render_list_item(&self, indent: usize, bullet: &ListBullet, content: &str) -> String {
+        let marker = match bullet {
+            ListBullet::Ordered(num) => format!("{num}."),
+            ListBullet::PlusExpand => "⊞".to_string(),
+            _ => {
+                let level = indent / 2;
+                BULLETS[level % BULLETS.len()].to_string()
+            }
+        };
+        let indent_spaces = indent * 2;
+        let marker_width = visible_length(&marker);
+        let content_indent = indent_spaces + marker_width + 1;
+        let marker = format!("{}{}{}", fg_color(&self.style.symbol), marker, "\x1b[0m");
+        let content = self.render_inline_content(content);
+        let first_prefix = format!("{}{} ", " ".repeat(indent_spaces), marker);
+        let next_prefix = " ".repeat(content_indent);
+        let content_width = self.width.saturating_sub(content_indent);
+        text_wrap(
+            &content,
+            content_width,
+            0,
+            &first_prefix,
+            &next_prefix,
+            false,
+            true,
+        )
+        .lines
+        .join("\n")
+    }
+
+    fn render_inline_content(&self, content: &str) -> String {
+        let mut parser = InlineParser::new();
+        parser
+            .parse(content)
+            .into_iter()
+            .map(|element| match element {
+                InlineElement::Text(text) => text,
+                InlineElement::Bold(text) => format!("\x1b[1m{text}\x1b[22m"),
+                InlineElement::Italic(text) => format!("\x1b[3m{text}\x1b[23m"),
+                InlineElement::BoldItalic(text) => format!("\x1b[1m\x1b[3m{text}\x1b[23m\x1b[22m"),
+                InlineElement::Underline(text) => format!("\x1b[4m{text}\x1b[24m"),
+                InlineElement::Strikeout(text) => format!("\x1b[9m{text}\x1b[29m"),
+                InlineElement::Code(text) => {
+                    format!("{} {} \x1b[0m", code_bg(&self.computed_style), text)
+                }
+                InlineElement::Link { text, url } => {
+                    format!(
+                        "\x1b[4m{text}\x1b[24m {}({})\x1b[0m",
+                        fg_color(&self.style.grey),
+                        url
+                    )
+                }
+                InlineElement::Image { alt, .. } => {
+                    format!("{}[{}]\x1b[0m", fg_color(&self.style.symbol), alt)
+                }
+                InlineElement::Footnote(text) => {
+                    format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
+                }
+            })
+            .collect()
     }
 
     fn renderer<'a>(&self, output: &'a mut Vec<u8>) -> StreamdownRenderer<&'a mut Vec<u8>> {
@@ -170,11 +290,15 @@ impl MarkdownRender {
     }
 
     fn render_code_line(&self, line: &str) -> String {
+        self.render_code_line_with_language(line, self.code_language.as_deref())
+    }
+
+    fn render_code_line_with_language(&self, line: &str, language: Option<&str>) -> String {
         let bg = code_bg(&self.computed_style);
         let reset = "\x1b[0m";
         let highlighted = self
             .highlighter
-            .highlight(line, self.code_language.as_deref())
+            .highlight(line, language)
             .trim_end_matches(['\r', '\n'])
             .to_string();
         let padding = self.width.saturating_sub(visible_length(&highlighted));
@@ -220,6 +344,24 @@ fn parse_rgb(value: &str) -> Option<(u8, u8, u8)> {
     let g = parts.next()?.parse().ok()?;
     let b = parts.next()?.parse().ok()?;
     Some((r, g, b))
+}
+
+fn render_style_from_computed(style: &ComputedStyle) -> RenderStyle {
+    RenderStyle {
+        bright: rgb_hex(&style.bright),
+        head: rgb_hex(&style.head),
+        symbol: rgb_hex(&style.symbol),
+        grey: rgb_hex(&style.grey),
+        dark: rgb_hex(&style.dark),
+        mid: rgb_hex(&style.mid),
+        light: rgb_hex(&style.mid),
+    }
+}
+
+fn rgb_hex(value: &str) -> String {
+    parse_rgb(value)
+        .map(|(r, g, b)| format!("#{r:02x}{g:02x}{b:02x}"))
+        .unwrap_or_else(|| "#808080".to_string())
 }
 
 #[cfg(test)]
@@ -299,5 +441,25 @@ fn unzip_file(path: &str, output_dir: &str) -> Result<(), Box<dyn std::error::Er
         assert!(output.contains("hello"));
         assert!(output.contains("rust"));
         assert!(!output.ends_with('\n'));
+    }
+
+    #[test]
+    fn ordered_lists_keep_parser_numbers() {
+        let options = RenderOptions::default();
+        let mut render = MarkdownRender::init(options).unwrap();
+        let output = render.render("1. first\n1. second\n1. third");
+        assert!(output.contains("1."));
+        assert!(output.contains("2."));
+        assert!(output.contains("3."));
+    }
+
+    #[test]
+    fn headings_and_list_markers_are_styled() {
+        let options = RenderOptions::default();
+        let mut render = MarkdownRender::init(options).unwrap();
+        let output = render.render("# Title\n\n- item");
+        assert!(output.contains("Title"));
+        assert!(output.contains("•"));
+        assert!(output.contains("\x1b[38;2;"));
     }
 }
