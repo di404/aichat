@@ -6,8 +6,7 @@ use streamdown_parser::{
     InlineElement, InlineParser, ListBullet, ParseEvent, Parser as StreamdownParser,
 };
 use streamdown_render::{
-    fg_color, render_heading, text_wrap, RenderFeatures, RenderStyle,
-    Renderer as StreamdownRenderer, BULLETS,
+    fg_color, text_wrap, RenderFeatures, RenderStyle, Renderer as StreamdownRenderer, BULLETS,
 };
 use streamdown_syntax::Highlighter;
 
@@ -137,6 +136,20 @@ impl MarkdownRender {
                     output.extend_from_slice(line.as_bytes());
                     output.push(b'\n');
                 }
+                event
+                    if event.is_inline()
+                        || matches!(
+                            event,
+                            ParseEvent::InlineElements(_)
+                                | ParseEvent::Newline
+                                | ParseEvent::EmptyLine
+                        ) =>
+                {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    let text = self.render_inline_event(&event);
+                    output.extend_from_slice(text.as_bytes());
+                }
                 event => standard_events.push(event),
             }
         }
@@ -185,6 +198,20 @@ impl MarkdownRender {
                     output.extend_from_slice(line.as_bytes());
                     output.push(b'\n');
                 }
+                event
+                    if event.is_inline()
+                        || matches!(
+                            event,
+                            ParseEvent::InlineElements(_)
+                                | ParseEvent::Newline
+                                | ParseEvent::EmptyLine
+                        ) =>
+                {
+                    self.render_standard_events(&mut output, &standard_events);
+                    standard_events.clear();
+                    let text = self.render_inline_event(&event);
+                    output.extend_from_slice(text.as_bytes());
+                }
                 event => standard_events.push(event),
             }
         }
@@ -196,9 +223,7 @@ impl MarkdownRender {
 
     fn render_custom_block(&self, event: &ParseEvent) -> String {
         match event {
-            ParseEvent::Heading { level, content } => {
-                render_heading(*level, content, self.width, "", &self.style).join("\n")
-            }
+            ParseEvent::Heading { level, content } => self.render_heading(*level, content),
             ParseEvent::ListItem {
                 indent,
                 bullet,
@@ -206,6 +231,25 @@ impl MarkdownRender {
             } => self.render_list_item(*indent, bullet, content),
             _ => String::new(),
         }
+    }
+
+    fn render_heading(&self, level: u8, content: &str) -> String {
+        let content = self.render_inline_content(content);
+        let color = match level {
+            1 | 2 => &self.style.bright,
+            3 => &self.style.head,
+            4 => &self.style.symbol,
+            5 => &self.style.grey,
+            _ => &self.style.grey,
+        };
+        let fg = fg_color(color);
+        let visible = visible_length(&content);
+        let left = if level <= 2 {
+            " ".repeat(self.width.saturating_sub(visible) / 2)
+        } else {
+            String::new()
+        };
+        format!("\x1b[1m{fg}{left}{content}\x1b[22m\x1b[0m")
     }
 
     fn render_list_item(&self, indent: usize, bullet: &ListBullet, content: &str) -> String {
@@ -251,7 +295,7 @@ impl MarkdownRender {
                 InlineElement::Underline(text) => format!("\x1b[4m{text}\x1b[24m"),
                 InlineElement::Strikeout(text) => format!("\x1b[9m{text}\x1b[29m"),
                 InlineElement::Code(text) => {
-                    format!("{} {} \x1b[0m", code_bg(&self.computed_style), text)
+                    format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
                 }
                 InlineElement::Link { text, url } => {
                     format!(
@@ -268,6 +312,56 @@ impl MarkdownRender {
                 }
             })
             .collect()
+    }
+
+    fn render_inline_event(&self, event: &ParseEvent) -> String {
+        match event {
+            ParseEvent::Text(text) => text.clone(),
+            ParseEvent::InlineCode(text) => {
+                format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
+            }
+            ParseEvent::Bold(text) => format!("\x1b[1m{text}\x1b[22m"),
+            ParseEvent::Italic(text) => format!("\x1b[3m{text}\x1b[23m"),
+            ParseEvent::BoldItalic(text) => format!("\x1b[1m\x1b[3m{text}\x1b[23m\x1b[22m"),
+            ParseEvent::Underline(text) => format!("\x1b[4m{text}\x1b[24m"),
+            ParseEvent::Strikeout(text) => format!("\x1b[9m{text}\x1b[29m"),
+            ParseEvent::Link { text, url } => {
+                format!("\x1b]8;;{url}\x1b\\\x1b[4m{text}\x1b[24m\x1b]8;;\x1b\\")
+            }
+            ParseEvent::Image { alt, .. } => {
+                format!("{}[{}]\x1b[0m", fg_color(&self.style.symbol), alt)
+            }
+            ParseEvent::Footnote(text) => {
+                format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
+            }
+            ParseEvent::InlineElements(elements) => elements
+                .iter()
+                .map(|element| match element {
+                    InlineElement::Text(text) => text.clone(),
+                    InlineElement::Bold(text) => format!("\x1b[1m{text}\x1b[22m"),
+                    InlineElement::Italic(text) => format!("\x1b[3m{text}\x1b[23m"),
+                    InlineElement::BoldItalic(text) => {
+                        format!("\x1b[1m\x1b[3m{text}\x1b[23m\x1b[22m")
+                    }
+                    InlineElement::Underline(text) => format!("\x1b[4m{text}\x1b[24m"),
+                    InlineElement::Strikeout(text) => format!("\x1b[9m{text}\x1b[29m"),
+                    InlineElement::Code(text) => {
+                        format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
+                    }
+                    InlineElement::Link { text, url } => {
+                        format!("\x1b]8;;{url}\x1b\\\x1b[4m{text}\x1b[24m\x1b]8;;\x1b\\")
+                    }
+                    InlineElement::Image { alt, .. } => {
+                        format!("{}[{}]\x1b[0m", fg_color(&self.style.symbol), alt)
+                    }
+                    InlineElement::Footnote(text) => {
+                        format!("{}{}\x1b[0m", fg_color(&self.style.symbol), text)
+                    }
+                })
+                .collect(),
+            ParseEvent::Newline | ParseEvent::EmptyLine => "\n".to_string(),
+            _ => String::new(),
+        }
     }
 
     fn renderer<'a>(&self, output: &'a mut Vec<u8>) -> StreamdownRenderer<&'a mut Vec<u8>> {
@@ -461,5 +555,16 @@ fn unzip_file(path: &str, output_dir: &str) -> Result<(), Box<dyn std::error::Er
         assert!(output.contains("Title"));
         assert!(output.contains("•"));
         assert!(output.contains("\x1b[38;2;"));
+    }
+
+    #[test]
+    fn non_code_blocks_do_not_use_background_color() {
+        let options = RenderOptions::default();
+        let mut render = MarkdownRender::init(options).unwrap();
+        let output = render.render("# Title\n\ntext `inline`\n\n- item\n\n1. ordered");
+        assert!(!output.contains("\x1b[48;2;"));
+
+        let output = render.render("\n```rust\nlet x = 1;\n```");
+        assert!(output.contains("\x1b[48;2;"));
     }
 }
