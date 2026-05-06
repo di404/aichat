@@ -72,6 +72,31 @@ document_loaders:
 # ---- apperence ----
 highlight: true                  # Controls syntax highlighting
 light_theme: false               # Activates a light color theme when true. env: AICHAT_LIGHT_THEME
+# Streamdown terminal markdown renderer settings.
+# These mirror streamdown-rs' TOML config, expressed as YAML.
+streamdown:
+  features:
+    CodeSpaces: false            # Parse 4-space indented blocks as code blocks
+    Clipboard: false             # Copy code blocks through terminal OSC 52
+    Logging: false
+    Timeout: 0.1
+    Savebrace: false             # Save code blocks to the streamdown savebrace temp file
+    Images: true
+    Links: true
+  style:
+    Margin: 0
+    ListIndent: 2
+    PrettyPad: true              # Kept for compatibility; aichat removes top/bottom code borders
+    PrettyBroken: false          # Visually wrap long code lines
+    Width: 0                     # 0 = use aichat's wrap/terminal width
+    HSV: [0.8, 0.5, 0.5]
+    Dark: { H: 1.00, S: 1.50, V: 0.25 }    # Code block background
+    Mid: { H: 1.00, S: 1.00, V: 0.50 }
+    Symbol: { H: 1.00, S: 1.00, V: 1.50 }  # Code language label / symbols
+    Head: { H: 1.00, S: 1.00, V: 1.75 }
+    Grey: { H: 1.00, S: 0.25, V: 1.37 }
+    Bright: { H: 1.00, S: 0.60, V: 2.00 }
+    Syntax: base16-ocean.dark    # Syntect theme name, e.g. InspiredGitHub, Solarized (dark)
 # Custom REPL left/right prompts, see https://github.com/sigoden/aichat/wiki/Custom-REPL-Prompt for more details
 left_prompt:
   '{color.green}{?session {?agent {agent}>}{session}{?role /}}{!session {?agent {agent}>}}{role}{?rag @{rag}}{color.cyan}{?session )}{!session >}{color.reset} '

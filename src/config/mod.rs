@@ -38,6 +38,7 @@ use std::{
     process,
     sync::{Arc, OnceLock},
 };
+use streamdown_config::Config as StreamdownConfig;
 use syntect::highlighting::ThemeSet;
 use terminal_colorsaurus::{color_scheme, ColorScheme, QueryOptions};
 
@@ -138,6 +139,8 @@ pub struct Config {
 
     pub highlight: bool,
     pub theme: Option<String>,
+    #[serde(default = "default_streamdown_config")]
+    pub streamdown: StreamdownConfig,
     pub left_prompt: Option<String>,
     pub right_prompt: Option<String>,
 
@@ -213,6 +216,7 @@ impl Default for Config {
 
             highlight: true,
             theme: None,
+            streamdown: default_streamdown_config(),
             left_prompt: None,
             right_prompt: None,
 
@@ -238,6 +242,16 @@ impl Default for Config {
             agent: None,
         }
     }
+}
+
+fn default_streamdown_config() -> StreamdownConfig {
+    let mut config = StreamdownConfig::default();
+    config.features.clipboard = false;
+    config.features.savebrace = false;
+    config.style.margin = 0;
+    config.style.pretty_broken = false;
+    config.style.syntax = "base16-ocean.dark".to_string();
+    config
 }
 
 pub type GlobalConfig = Arc<RwLock<Config>>;
@@ -1937,7 +1951,13 @@ impl Config {
             env::var("COLORTERM").as_ref().map(|v| v.as_str()),
             Ok("truecolor")
         );
-        Ok(RenderOptions::new(theme, wrap, self.wrap_code, truecolor))
+        Ok(RenderOptions::new(
+            theme,
+            wrap,
+            self.wrap_code,
+            truecolor,
+            self.streamdown.clone(),
+        ))
     }
 
     pub fn render_prompt_left(&self) -> String {
