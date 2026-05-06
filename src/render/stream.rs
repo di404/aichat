@@ -122,7 +122,7 @@ async fn markdown_stream_inner(
                     if text.contains('\n') {
                         let text = format!("{buffer}{text}");
                         let (head, tail) = split_line_tail(&text);
-                        let output = render.render(head);
+                        let output = render.render_stream_text(head);
                         print_block(writer, &output, columns)?;
                         buffer = tail.to_string();
                     } else {
